@@ -1,0 +1,86 @@
+name: CI-CUDA-simulated
+
+# GitHub's runners have no GPU, so build-cuda.yml builds the CUDA code but
+# cannot run gloo_test_cuda. PantheonSim simulates an NVIDIA T4 on the
+# runner's CPU, so the CUDA allreduce and broadcast tests run here. It checks
+# results, not speed; a real GPU is still the final word.
+on: # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - main
+  pull_request:
+
+# The job reads the repository and nothing else. The simulator's action uses
+# no token or secrets, and installs packages only from Ubuntu and NVIDIA.
+permissions: read-all
+
+jobs:
+  test-cuda:
+    name: gloo_test_cuda on a simulated T4
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Simulated GPU (NVIDIA T4) and CUDA 12.8
+        uses: pantheongpu/setup-pantheonsim@06648b8c0cb091584196678593215db2e16bd7eb # v0.1.2
+        with:
+          gpu: nvidia/t4
+          cuda-toolkit: '12.8'
+
+      - name: Install apt packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget perl build-essential cmake libibverbs-dev libssl-dev pkg-config
+
+      - name: Install openssl
+        run: |
+          sudo wget -q https://www.openssl.org/source/openssl-1.1.1b.tar.gz
+          sudo tar -xzf openssl-1.1.1b.tar.gz
+          cd openssl-1.1.1b
+          sudo ./config --prefix=/opt/openssl --openssldir=/opt/openssl/ssl
+          sudo make -j 2
+          sudo make install
+
+      - name: Install libuv
+        run: |
+          wget -q -O libuv-v1.49.2.tar.gz https://dist.libuv.org/dist/v1.49.2/libuv-v1.49.2.tar.gz
+          tar xf libuv-v1.49.2.tar.gz
+          cd libuv-v1.49.2
+          mkdir -p build
+          cd build
+          cmake ../ -DCMAKE_INSTALL_PREFIX=/usr/local
+          sudo make install
+
+      - name: Install googletest
+        run: |
+          wget -q -O googletest-release-1.15.2.tar.gz \
+            https://github.com/google/googletest/releases/download/v1.15.2/googletest-1.15.2.tar.gz
+          tar xf googletest-release-1.15.2.tar.gz
+          cd googletest-1.15.2
+          mkdir -p build
+          cd build
+          cmake ../ -DCMAKE_INSTALL_PREFIX=/usr/local
+          sudo make install
+
+      # The simulator stands in for the CUDA runtime at run time, so the
+      # tests link the shared one; 75 carries PTX for the simulated T4.
+      - name: Build with CUDA
+        run: |
+          mkdir -p build
+          cd build
+          cmake ../ \
+            -DBUILD_TEST=ON \
+            -DUSE_CUDA=ON \
+            -DGLOO_USE_CUDA_TOOLKIT=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=75 \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared \
+            -DUSE_LIBUV=ON \
+            -DOPENSSL_ROOT_DIR=/opt/openssl/
+          make -j"$(nproc)"
+
+      - name: Run the CUDA tests
+        run: LD_LIBRARY_PATH=/opt/openssl:/opt/openssl/lib:$LD_LIBRARY_PATH ./build/gloo/test/gloo_test_cuda
