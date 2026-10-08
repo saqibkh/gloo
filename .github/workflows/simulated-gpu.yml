@@ -8,6 +8,7 @@ on: # yamllint disable-line rule:truthy
   push:
     branches:
       - main
+      - ci-simulated-gpu
   pull_request:
 
 # The job reads the repository and nothing else. The simulator's action uses
